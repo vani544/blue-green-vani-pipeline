@@ -7,17 +7,17 @@ pipeline {
 
     environment {
         DOCKER_HUB_CREDS = credentials('docker-creds')
-        AWS_CREDS = credentials('aws-eks-creds')
-        DOCKER_IMAGE = "kastrov/blue-green-demo:${params.DEPLOY_ENV}-${BUILD_NUMBER}"
-        EKS_CLUSTER = "kastro-eks"
         AWS_REGION = "us-east-1"
+        EKS_CLUSTER = "kastro-eks"
+        K8S_NAMESPACE = "blue-green-demo"
+        DOCKER_IMAGE = "kastrov/blue-green-demo:${params.DEPLOY_ENV}-${BUILD_NUMBER}"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                echo "Checking out code..."
-                checkout scm
+                echo 'Checking out code...'
+                git 'https://github.com/KastroVKiran/blue-green-app.git'
             }
         }
 
@@ -34,7 +34,7 @@ pipeline {
 
         stage('Push Docker Image') {
             steps {
-                echo "Pushing Docker image to Docker Hub..."
+                echo 'Pushing Docker image to Docker Hub...'
                 sh """
                 echo ${DOCKER_HUB_CREDS_PSW} | docker login -u ${DOCKER_HUB_CREDS_USR} --password-stdin
                 docker push ${DOCKER_IMAGE}
@@ -42,56 +42,108 @@ pipeline {
             }
         }
 
+        stage('Configure AWS EKS Access') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-eks-creds',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh """
+                    aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}
+                    aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
+                    aws configure set region ${AWS_REGION}
+                    aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER}
+                    kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                    kubectl config set-context --current --namespace=${K8S_NAMESPACE}
+                    """
+                }
+            }
+        }
+
         stage('Deploy to EKS') {
             steps {
-                echo "Deploying to ${params.DEPLOY_ENV} environment in EKS cluster..."
-                
-                // Configure AWS and kubectl
-                withAWS(credentials: 'aws-eks-creds', region: "${AWS_REGION}") {
-                    sh """
-                    # Update kubeconfig
-                    aws eks update-kubeconfig --name ${EKS_CLUSTER} --region ${AWS_REGION}
-                    
-                    # Update the Kubernetes deployment manifest
-                    cat k8s/${params.DEPLOY_ENV}-deployment.yaml | sed "s|IMAGE_PLACEHOLDER|${DOCKER_IMAGE}|g" > k8s/${params.DEPLOY_ENV}-deployment-updated.yaml
-                    
-                    # Apply the Kubernetes deployment
-                    kubectl apply -f k8s/${params.DEPLOY_ENV}-deployment-updated.yaml
-                    kubectl apply -f k8s/service.yaml
-                    
-                    # Wait for deployment to roll out
-                    kubectl rollout status deployment/${params.DEPLOY_ENV}-deployment
-                    """
+                script {
+                    try {
+                        echo "Deploying to ${params.DEPLOY_ENV} environment in EKS cluster..."
+                        sh """
+                        # Update the Kubernetes deployment manifest
+                        cat k8s/${params.DEPLOY_ENV}-deployment.yaml | \
+                            sed "s|IMAGE_PLACEHOLDER|${DOCKER_IMAGE}|g" > k8s/${params.DEPLOY_ENV}-deployment-updated.yaml
+                        
+                        # Apply the Kubernetes deployment
+                        kubectl apply -f k8s/${params.DEPLOY_ENV}-deployment-updated.yaml
+                        
+                        # Update service selector if needed
+                        if kubectl get svc blue-green-service >/dev/null 2>&1; then
+                            kubectl patch svc blue-green-service -p '{"spec":{"selector":{"app":"${params.DEPLOY_ENV}-app"}}}'
+                        else
+                            kubectl apply -f k8s/service.yaml
+                        fi
+                        
+                        # Wait for deployment
+                        kubectl rollout status deployment/${params.DEPLOY_ENV}-deployment --timeout=300s
+                        
+                        # Verify pods are ready
+                        kubectl wait --for=condition=ready pods -l app=${params.DEPLOY_ENV}-app --timeout=300s
+                        """
+                    } catch (err) {
+                        echo 'Deployment failed, gathering debug information...'
+                        sh """
+                        echo '### Failed pods:'
+                        kubectl get pods -l app=${params.DEPLOY_ENV}-app -o wide
+                        
+                        echo '### Pod logs:'
+                        kubectl logs -l app=${params.DEPLOY_ENV}-app --all-containers=true --tail=50
+                        
+                        echo '### Events:'
+                        kubectl get events --sort-by='.metadata.creationTimestamp' | grep -i error || true
+                        
+                        echo '### Describe deployment:'
+                        kubectl describe deployment ${params.DEPLOY_ENV}-deployment
+                        """
+                        error("Deployment failed: ${err.getMessage()}")
+                    }
                 }
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                echo "Verifying deployment..."
-                withAWS(credentials: 'aws-eks-creds', region: "${AWS_REGION}") {
-                    sh """
-                    # Check pods status
-                    kubectl get pods -l app=${params.DEPLOY_ENV}-app
-                    
-                    # Get service info
-                    kubectl get svc blue-green-service
-                    """
+                script {
+                    echo 'Verifying deployment...'
+                    def lbUrl = sh(script: "kubectl get svc blue-green-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
+                    echo "Current deployments:"
+                    sh 'kubectl get deployments'
+                    echo "Service status:"
+                    sh 'kubectl get svc blue-green-service'
+                    echo "Pod status:"
+                    sh "kubectl get pods -l app=${params.DEPLOY_ENV}-app -o wide"
+                    echo "Load Balancer URL: http://${lbUrl}"
                 }
             }
         }
     }
-    
+
     post {
         success {
-            echo "Deployment successful! The ${params.DEPLOY_ENV} environment is now active."
+            script {
+                def lbUrl = sh(script: "kubectl get svc blue-green-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
+                echo "Deployment successful! The ${params.DEPLOY_ENV} environment is now active."
+                echo "You can access the service at: http://${lbUrl}"
+            }
         }
         failure {
-            echo "Deployment failed. Check the logs for details."
+            echo 'Deployment failed. Check the logs for details.'
+            echo 'Common issues:'
+            echo '1. Application failing health checks (/health endpoint)'
+            echo '2. Insufficient resources in EKS cluster'
+            echo '3. Docker image pull issues'
         }
         always {
-            // Clean up local Docker images
             sh "docker rmi ${DOCKER_IMAGE} || true"
+            archiveArtifacts artifacts: 'k8s/*-updated.yaml', allowEmptyArchive: true
         }
     }
 }
