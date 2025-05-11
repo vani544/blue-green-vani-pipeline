@@ -16,5 +16,5 @@ ENV DEPLOY_ENV=${DEPLOY_ENV}
 # Port 5000 for the application
 EXPOSE 5000
 
-# Use gunicorn for production deployment
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
+# Use gunicorn with proper timeout settings
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "120", "--workers", "2", "app:app"]
