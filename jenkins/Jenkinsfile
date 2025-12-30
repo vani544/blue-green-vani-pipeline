@@ -1,183 +1,63 @@
 pipeline {
-    agent any 
+  agent any
 
-    parameters {
-        choice(name: 'DEPLOY_ENV', choices: ['blue', 'green'], description: 'Select deployment environment')
+  parameters {
+    choice(name: 'DEPLOY_ENV', choices: ['blue', 'green'], description: 'Blue or Green')
+    choice(name: 'ENV', choices: ['dev', 'qa', 'prod'], description: 'Environment')
+  }
+
+  environment {
+    IMAGE = "vani5652/blue-green-demo:${DEPLOY_ENV}-${ENV}-${BUILD_NUMBER}"
+    GIT_REPO = "https://github.com/vani544/blue-green-app.git"
+    ARGO_APP = "blue-green-app"
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        git branch: 'main', url: "${GIT_REPO}"
+      }
     }
 
-    environment {
-        DOCKER_HUB_CREDS = credentials('docker-creds')
-        AWS_REGION = "us-east-1"
-        EKS_CLUSTER = "kastro-eks"
-        K8S_NAMESPACE = "blue-green-demo"
-        DOCKER_IMAGE = "kastrov/blue-green-demo:${params.DEPLOY_ENV}-${BUILD_NUMBER}"
-        GUNICORN_TIMEOUT = "120"
-        HEALTH_CHECK_TIMEOUT = "10" // Increased from 5
+    stage('Build & Push Image') {
+      steps {
+        sh """
+        docker build -t ${IMAGE} .
+        docker push ${IMAGE}
+        """
+      }
     }
 
-    stages {
-        stage('Checkout') {
-            steps {
-                echo 'Checking out code...'
-                git 'https://github.com/KastroVKiran/blue-green-app.git'
-            }
-        }
-
-        stage('Build Docker Image') {
-            steps {
-                echo "Building Docker image for ${params.DEPLOY_ENV} environment..."
-                sh """
-                docker build \
-                    --build-arg DEPLOY_ENV=${params.DEPLOY_ENV} \
-                    --no-cache \
-                    -t ${DOCKER_IMAGE} .
-                """
-            }
-        }
-
-        stage('Push Docker Image') {
-            steps {
-                echo 'Pushing Docker image to Docker Hub...'
-                script {
-                    withCredentials([usernamePassword(credentialsId: 'docker-creds', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
-                        sh """
-                        docker login -u ${USERNAME} -p ${PASSWORD}
-                        docker push ${DOCKER_IMAGE}
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Configure AWS EKS Access') {
-            steps {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-eks-creds',
-                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-                ]]) {
-                    sh """
-                    aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}
-                    aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
-                    aws configure set region ${AWS_REGION}
-                    aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER}
-                    kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-                    kubectl config set-context --current --namespace=${K8S_NAMESPACE}
-                    """
-                }
-            }
-        }
-
-        stage('Deploy to EKS') {
-            steps {
-                script {
-                    try {
-                        echo "Deploying to ${params.DEPLOY_ENV} environment in EKS cluster..."
-                        sh """
-                        # Update the Kubernetes deployment manifest with proper timeouts
-                        cat k8s/${params.DEPLOY_ENV}-deployment.yaml | \
-                            sed "s|IMAGE_PLACEHOLDER|${DOCKER_IMAGE}|g" | \
-                            sed "s|TIMEOUT_VALUE|${HEALTH_CHECK_TIMEOUT}|g" > k8s/${params.DEPLOY_ENV}-deployment-updated.yaml
-                        
-                        # Apply the Kubernetes deployment
-                        kubectl apply -f k8s/${params.DEPLOY_ENV}-deployment-updated.yaml
-                        
-                        # Update service selector
-                        kubectl patch svc blue-green-service -p '{"spec":{"selector":{"app":"${params.DEPLOY_ENV}-app"}}}' || \
-                            kubectl apply -f k8s/service.yaml
-                        
-                        # Wait for deployment with extended timeout
-                        kubectl rollout status deployment/${params.DEPLOY_ENV}-deployment --timeout=600s
-                        
-                        # Verify pods are ready (simplified selector)
-                        kubectl wait --for=condition=ready pods -l app=${params.DEPLOY_ENV}-app --timeout=600s
-                        
-                        # Additional health check verification
-                        kubectl get pods -l app=${params.DEPLOY_ENV}-app -o wide
-                        """
-                    } catch (err) {
-                        echo 'Deployment failed, gathering debug information...'
-                        sh """
-                        echo '### Current deployments:'
-                        kubectl get deployments -o wide
-                        
-                        echo '### Failed pods:'
-                        kubectl get pods -l app=${params.DEPLOY_ENV}-app -o wide
-                        
-                        echo '### Pod logs:'
-                        kubectl logs -l app=${params.DEPLOY_ENV}-app --all-containers=true --tail=100
-                        
-                        echo '### Events:'
-                        kubectl get events --sort-by='.metadata.creationTimestamp' | grep -i -E 'error|fail|timeout' || true
-                        
-                        echo '### Describe deployment:'
-                        kubectl describe deployment ${params.DEPLOY_ENV}-deployment
-                        
-                        echo '### Describe service:'
-                        kubectl describe svc blue-green-service
-                        
-                        echo '### Network diagnostics:'
-                        kubectl get endpoints blue-green-service -o yaml
-                        """
-                        error("Deployment failed: ${err.getMessage()}")
-                    }
-                }
-            }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                script {
-                    echo 'Verifying deployment...'
-                    def lbUrl = sh(script: "kubectl get svc blue-green-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
-                    echo "Current deployments:"
-                    sh 'kubectl get deployments'
-                    echo "Service status:"
-                    sh 'kubectl get svc blue-green-service'
-                    echo "Pod status:"
-                    sh "kubectl get pods -l app=${params.DEPLOY_ENV}-app -o wide"
-                    echo "Load Balancer URL: http://${lbUrl}"
-                    
-                    // Health check with retries
-                    sh """
-                    for i in {1..5}; do
-                        if curl -sSf --max-time 10 http://${lbUrl}/health; then
-                            echo "Health check passed"
-                            exit 0
-                        fi
-                        echo "Health check attempt \$i failed, retrying..."
-                        sleep 10
-                    done
-                    echo "Health check failed after 5 attempts"
-                    exit 1
-                    """
-                }
-            }
-        }
+    stage('Update Manifests') {
+      steps {
+        sh """
+        sed -i "s|IMAGE_PLACEHOLDER|${IMAGE}|g" k8s/deployment.yaml
+        sed -i "s|DEPLOY_ENV|${DEPLOY_ENV}|g" k8s/deployment.yaml
+        sed -i "s|DEPLOY_ENV|${DEPLOY_ENV}|g" k8s/service.yaml
+        """
+      }
     }
 
-    post {
-        success {
-            script {
-                def lbUrl = sh(script: "kubectl get svc blue-green-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
-                echo "Deployment successful! The ${params.DEPLOY_ENV} environment is now active."
-                echo "You can access the service at: http://${lbUrl}"
-                echo "Health check endpoint: http://${lbUrl}/health"
-            }
-        }
-        failure {
-            echo 'Deployment failed. Check the logs for details.'
-            echo 'Common issues:'
-            echo '1. Application failing health checks (/health endpoint)'
-            echo '2. Insufficient resources in EKS cluster'
-            echo '3. Docker image pull issues'
-            echo '4. Health check timeouts (current timeout: ${HEALTH_CHECK_TIMEOUT}s)'
-        }
-        always {
-            sh "docker rmi ${DOCKER_IMAGE} || true"
-            archiveArtifacts artifacts: 'k8s/*-updated.yaml', allowEmptyArchive: true
-            cleanWs()
-        }
+    stage('Commit & Push to Git') {
+      steps {
+        sh """
+        git config user.email "vani.vanisri28@gmail.com"
+        git config user.name "vani544"
+        git add k8s/
+        git commit -m "Deploy ${DEPLOY_ENV} to ${ENV}"
+        git push origin main
+        """
+      }
     }
+
+    stage('Trigger Argo CD Sync') {
+      steps {
+        sh """
+        argocd app sync ${ARGO_APP}
+        argocd app wait ${ARGO_APP} --health
+        """
+      }
+    }
+  }
 }
