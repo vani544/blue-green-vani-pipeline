@@ -9,21 +9,21 @@ spec:
   selector:
     matchLabels:
       app: bg-app
-      environment: DEPLOY_ENV
+      environment: blue
   template:
     metadata:
       labels:
         app: bg-app
-        environment: DEPLOY_ENV
+        environment: blue
     spec:
       containers:
       - name: bg-app
-        image: IMAGE_PLACEHOLDER
+        image: vani5652/blue-green-demo:blue-dev-10
         ports:
         - containerPort: 5000
         env:
-        - name: DEPLOY_ENV
-          value: "DEPLOY_ENV"
+        - name: blue
+          value: "blue"
         livenessProbe:
           httpGet:
             path: /health
