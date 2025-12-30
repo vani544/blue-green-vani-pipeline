@@ -58,14 +58,3 @@ pipeline {
     }
   }
 }
-
-    #stage('Trigger Argo CD Sync') {
-    #  steps {
-    #    sh """
-     #   argocd app sync ${ARGO_APP}
-     #   argocd app wait ${ARGO_APP} --health
-      #  """
-      #}
-    #}
-  }
-}
