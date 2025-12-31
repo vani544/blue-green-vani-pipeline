@@ -1,30 +1,31 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: bg-deployment
+  name: bg-deployment-DEPLOY_ENV
   labels:
     app: bg-app
+    environment: DEPLOY_ENV
 spec:
   replicas: 2
   selector:
     matchLabels:
       app: bg-app
-      environment: blue
+      environment: DEPLOY_ENV
   template:
     metadata:
       labels:
         app: bg-app
-        environment: blue
+        environment: DEPLOY_ENV
     spec:
       containers:
       - name: bg-app
-        image: vani5652/blue-green-demo:blue-dev-7
+        image: IMAGE_TAG
         imagePullPolicy: Always
         ports:
         - containerPort: 5000
         env:
-        - name: blue
-          value: "blue"
+        - name: DEPLOY_ENV
+          value: "DEPLOY_ENV"
         livenessProbe:
           httpGet:
             path: /health
@@ -35,4 +36,3 @@ spec:
             path: /health
             port: 5000
           initialDelaySeconds: 10
-
