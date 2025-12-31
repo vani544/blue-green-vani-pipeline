@@ -5,7 +5,7 @@ metadata:
 spec:
   selector:
     app: bg-app
-    environment: DEPLOY_ENV
+    environment: blue
   ports:
     - port: 80
       targetPort: 5000
