@@ -8,7 +8,7 @@ pipeline {
 
   environment {
     IMAGE = "vani5652/blue-green-demo:${DEPLOY_ENV}-${ENV}-${BUILD_NUMBER}"
-    GIT_REPO = "https://github.com/vani544/blue-green-app.git"
+    GIT_REPO = "https://github.com/vani544/blue-green-vani-pipeline.git"
     ARGO_APP = "blue-green-app"
   }
 
