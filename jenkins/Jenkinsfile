@@ -29,10 +29,10 @@ pipeline {
       }
     }
 
-    stage('Update Manifests') {
+    stage('Update K8S files in Git') {
       steps {
         sh """
-          sed -i "s|image:.*|image: ${IMAGE}|g" k8s/deployment.yaml
+          sed -i "s|IMAGE_TAG|vani5652/blue-green-demo:${IMAGE_TAG}|g" k8s/deployment.yaml
           sed -i "s|DEPLOY_ENV|${DEPLOY_ENV}|g" k8s/deployment.yaml
           sed -i "s|DEPLOY_ENV|${DEPLOY_ENV}|g" k8s/service.yaml
         """
