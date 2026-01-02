@@ -33,7 +33,7 @@ pipeline {
       steps {
         sh """
           mkdir -p k8s
-          sed  "s|IMAGE_TAG|${IMAGE}|g" K8S/Template/deployment.yaml > k8s/deployment.yaml
+          sed  -i "s|IMAGE_TAG|${IMAGE}|g" K8S/Template/deployment.yaml > k8s/deployment.yaml
           sed  "s|DEPLOY_ENV|${DEPLOY_ENV}|g" K8S/Template/deployment.yaml > k8s/deployment.yaml
           sed  "s|DEPLOY_ENV|${DEPLOY_ENV}|g" K8S/Template/service.yaml > k8s/service.yaml
         """
