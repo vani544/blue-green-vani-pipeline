@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bg-deployment-blue
+  labels:
+    app: bg-app
+    environment: blue
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bg-app
+      environment: blue
+  template:
+    metadata:
+      labels:
+        app: bg-app
+        environment: blue
+    spec:
+      containers:
+        - name: bg-app
+          image: IMAGE_TAG
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          env:
+            - name: ENVIRONMENT
+              value: blue
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
