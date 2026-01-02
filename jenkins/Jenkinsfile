@@ -32,9 +32,9 @@ pipeline {
     stage('Update K8S files in Git') {
       steps {
         sh """
-          sed -i "s|IMAGE_TAG|${IMAGE}|g" k8s/deployment.yaml
-          sed -i "s|DEPLOY_ENV|${DEPLOY_ENV}|g" k8s/deployment.yaml
-          sed -i "s|DEPLOY_ENV|${DEPLOY_ENV}|g" k8s/service.yaml
+          sed -i "s|IMAGE_TAG|${IMAGE}|g" K8S/Template/deployment.yaml > k8s/deployment.yaml
+          sed -i "s|DEPLOY_ENV|${DEPLOY_ENV}|g" K8S/Template/deployment.yaml > k8s/deployment.yaml
+          sed -i "s|DEPLOY_ENV|${DEPLOY_ENV}|g" k8s/Template/service.yaml > k8s/service.yaml
         """
       }
     }
